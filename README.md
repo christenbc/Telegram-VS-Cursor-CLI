@@ -23,6 +23,9 @@ pip install -r requirements.txt
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from BotFather |
 | `TELEGRAM_CHAT_ID` | yes | Your Telegram user/chat ID (bot only replies to this chat) |
 | `VAULT_PATH` | no | Workspace path passed to `agent --workspace` (default: `/home/ubuntu/vaults/test`) |
+| `OBSIDIAN_VAULT_NAME` | no | Obsidian vault name for task links (default: `Testing`) |
+| `OBSIDIAN_TASKS_PREFIX` | no | Folder inside the vault where task notes live (default: `TaskNotes/Tasks`) |
+| `OBSID_NET_BASE` | no | Obsidian link redirector base URL (default: `https://obsid.net`) |
 | `CURSOR_AGENT_PATH` | no | Path to the `agent` binary (default: `/home/ubuntu/.local/bin/agent`) |
 | `AGENT_TIMEOUT` | no | Agent timeout in seconds (default: `120`) |
 
