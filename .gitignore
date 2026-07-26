@@ -1,5 +1,5 @@
 __pycache__/
 *.py[cod]
 .env
-telegram-bot-env/
+.venv/
 vaults/

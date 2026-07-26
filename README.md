@@ -42,5 +42,5 @@ python telegram_cursor_bot.py
 Environment=TELEGRAM_BOT_TOKEN=...
 Environment=TELEGRAM_CHAT_ID=...
 Environment=VAULT_PATH=/path/to/vault
-ExecStart=/path/to/.venv/bin/python /path/to/telegram_cursor_bot.py
+ExecStart=/home/ubuntu/Telegram-VS-Cursor-CLI/.venv/bin/python /home/ubuntu/Telegram-VS-Cursor-CLI/telegram_cursor_bot.py
 ```

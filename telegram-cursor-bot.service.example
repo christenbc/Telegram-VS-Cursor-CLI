@@ -9,7 +9,7 @@ Environment=TELEGRAM_BOT_TOKEN=your_token_here
 Environment=TELEGRAM_CHAT_ID=your_chat_id_here
 Environment=VAULT_PATH=/home/ubuntu/vaults/test
 Environment=CURSOR_AGENT_PATH=/home/ubuntu/.local/bin/agent
-ExecStart=/home/ubuntu/telegram-bot-env/bin/python /home/ubuntu/Telegram-VS-Cursor-CLI/telegram_cursor_bot.py
+ExecStart=/home/ubuntu/Telegram-VS-Cursor-CLI/.venv/bin/python /home/ubuntu/Telegram-VS-Cursor-CLI/telegram_cursor_bot.py
 Restart=always
 
 [Install]
