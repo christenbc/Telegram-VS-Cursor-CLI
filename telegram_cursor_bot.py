@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
-from telegram import MessageEntity as TelegramMessageEntity, Update
+from telegram import Bot, MessageEntity as TelegramMessageEntity, Update
 from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from telegramify_markdown.converter import convert
@@ -261,6 +261,24 @@ async def _send_final(bot, chat_id: int, payload: EntityFinalPayload):
     text = payload.text or "Hecho, sin salida del agente."
     entities = payload.entities or []
     await _send_message_chunks(bot, chat_id, text, entities)
+
+
+async def send_agent_prompt_to_telegram(
+    prompt: str,
+    timeout: float = AGENT_TIMEOUT,
+    chat_id: int = MY_CHAT_ID,
+):
+    """Run the agent with a prompt and send the full response to Telegram."""
+    chunks: list[str] = []
+    async for chunk in run_agent_streaming(prompt, timeout=timeout):
+        chunks.append(chunk)
+
+    markdown = "".join(chunks).strip() or "Hecho, sin salida del agente."
+    text, entities = render_telegram_message(markdown)
+
+    bot = Bot(TOKEN)
+    async with bot:
+        await _send_message_chunks(bot, chat_id, text, entities)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

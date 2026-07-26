@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
 .env
+env.sh
 .venv/
 vaults/
+logs/

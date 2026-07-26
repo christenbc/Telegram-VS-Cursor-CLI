@@ -5,12 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-Environment=TELEGRAM_BOT_TOKEN=your_token_here
-Environment=TELEGRAM_CHAT_ID=your_chat_id_here
-Environment=VAULT_PATH=/home/ubuntu/vaults/test
-Environment=OBSIDIAN_VAULT_NAME=Core Vault
-Environment=OBSIDIAN_TASKS_PREFIX=TaskNotes/Tasks
-Environment=CURSOR_AGENT_PATH=/home/ubuntu/.local/bin/agent
+EnvironmentFile=/home/ubuntu/Telegram-VS-Cursor-CLI/env.sh
 ExecStart=/home/ubuntu/Telegram-VS-Cursor-CLI/.venv/bin/python /home/ubuntu/Telegram-VS-Cursor-CLI/telegram_cursor_bot.py
 Restart=always
 
