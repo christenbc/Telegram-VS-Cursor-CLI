@@ -89,6 +89,7 @@ def render_telegram_message(markdown: str) -> tuple[str, list]:
 
 def build_telegram_format_hint() -> str:
     return (
+        "Responde en el mismo idioma que el mensaje del usuario.\n"
         "Importante: tu respuesta se mostrará en un chat de Telegram y se renderizará "
         "como Markdown. Usa formato enriquecido cuando mejore la legibilidad:\n"
         "- **negrita** y *cursiva* para énfasis\n"

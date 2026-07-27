@@ -7,7 +7,7 @@ description: Query and summarize TaskNotes tasks in an Obsidian vault. Use when 
 
 ## Language
 
-Respond to the user in **Spanish**, even though these instructions are in English.
+Respond in the **same language as the user's message** (e.g. Spanish if they write in Spanish, English if they write in English). These instructions are in English regardless.
 
 ## When to apply
 
