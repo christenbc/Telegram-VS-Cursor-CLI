@@ -40,7 +40,7 @@ source env.sh
 python telegram_cursor_bot.py
 ```
 
-## Daily task summary (cron)
+## Daily task summary (systemd timer)
 
 `daily_task_summary.py` asks the Cursor Agent for a morning summary of today's and pending tasks from the Obsidian vault, then sends it to your Telegram chat.
 
@@ -50,16 +50,18 @@ Test manually:
 ./run_daily_summary.sh
 ```
 
-Schedule every day at 8:30 Madrid time:
+Schedule every day at 8:30 Madrid time. Use a systemd timer (not cron): Debian/Ubuntu cron ignores `CRON_TZ` and runs jobs in the system timezone (UTC on most VPS hosts), which would fire at 10:30 in summer if you schedule `30 8 * * *`.
 
-```cron
-CRON_TZ=Europe/Madrid
-30 8 * * * /home/ubuntu/Telegram-VS-Cursor-CLI/run_daily_summary.sh >> /home/ubuntu/Telegram-VS-Cursor-CLI/logs/daily_summary.log 2>&1
+```bash
+sudo cp daily-summary.service daily-summary.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now daily-summary.timer
+systemctl list-timers daily-summary.timer
 ```
 
 Logs are written to `logs/daily_summary.log`.
 
-## systemd example
+## systemd example (bot)
 
 ```ini
 [Service]

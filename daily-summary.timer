@@ -1,0 +1,9 @@
+[Unit]
+Description=Run daily task summary at 08:30 Europe/Madrid
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Europe/Madrid
+Persistent=true
+
+[Install]
+WantedBy=timers.target

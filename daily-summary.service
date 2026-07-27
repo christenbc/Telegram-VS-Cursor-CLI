@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily task summary via Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=/home/ubuntu/Telegram-VS-Cursor-CLI/env.sh
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/home/ubuntu/Telegram-VS-Cursor-CLI
+ExecStart=/home/ubuntu/Telegram-VS-Cursor-CLI/run_daily_summary.sh
+StandardOutput=append:/home/ubuntu/Telegram-VS-Cursor-CLI/logs/daily_summary.log
+StandardError=append:/home/ubuntu/Telegram-VS-Cursor-CLI/logs/daily_summary.log
