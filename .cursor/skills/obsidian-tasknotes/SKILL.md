@@ -48,20 +48,23 @@ Interpret "today", "tomorrow", and date comparisons in **Europe/Madrid**.
 
 ## Links in Telegram responses
 
-When citing a task that exists as a note, link its title with obsid.net:
+When citing a task that exists as a note, link its title with obsid.net.
+**Percent-encode the entire `file` value** (`/` → `%2F`, spaces → `%20`). Unencoded spaces break Telegram hyperlinks.
 
 ```
-[task title]({OBSID_NET_BASE}/?vault={OBSIDIAN_VAULT_NAME}&file=relative/path/without/md)
+[task title]({OBSID_NET_BASE}/?vault={OBSIDIAN_VAULT_NAME}&file=TaskNotes%2FTasks%2FPrepare%20slides%20for%20client%20meeting)
 ```
 
 - `vault`: `{OBSIDIAN_VAULT_NAME}`
-- `file`: path relative to the vault root, without `.md` extension, forward slashes `/`
+- `file`: path relative to the vault root under `{OBSIDIAN_TASKS_PREFIX}`, without `.md`, fully URL-encoded
 
-Example for a task at `{OBSIDIAN_TASKS_PREFIX}/Comprar leche.md`:
+Example for `Comprar leche.md`:
 
 ```
-[Comprar leche]({OBSID_NET_BASE}/?vault={OBSIDIAN_VAULT_NAME}&file={OBSIDIAN_TASKS_PREFIX}/Comprar leche)
+[Comprar leche]({OBSID_NET_BASE}/?vault={OBSIDIAN_VAULT_NAME}&file=TaskNotes%2FTasks%2FComprar%20leche)
 ```
+
+(The bot re-encodes obsid.net links before sending, but prefer emitting encoded URLs.)
 
 ## Morning summary
 

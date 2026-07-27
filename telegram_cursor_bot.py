@@ -43,16 +43,32 @@ _TASKNOTES_KEYWORDS_RE = re.compile(
 
 _OBSIDIAN_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((obsidian://[^)\s]+)\)")
 _PLAIN_OBSIDIAN_URI_RE = re.compile(r"(?<!\])(obsidian://open\?[^\s)]+)")
+# Agents often emit unencoded spaces in file=; markdown links need percent-encoding.
+_OBSID_NET_MD_LINK_RE = re.compile(
+    r"\[([^\]\n]+)\]\((" + re.escape(OBSID_NET_BASE) + r"/\?[^\)]+)\)",
+    re.IGNORECASE,
+)
 
 
-def build_obsid_net_url(relative_note_path: str) -> str:
+def build_obsid_net_url(relative_note_path: str, vault: str | None = None) -> str:
     """Build an obsid.net redirect URL for a note relative to the vault root."""
     note_path = relative_note_path.removesuffix(".md").replace("\\", "/").lstrip("/")
     query = urlencode(
-        {"vault": OBSIDIAN_VAULT_NAME, "file": note_path},
+        {"vault": vault or OBSIDIAN_VAULT_NAME, "file": note_path},
         quote_via=quote,
     )
     return f"{OBSID_NET_BASE}/?{query}"
+
+
+def normalize_obsid_net_url(url: str) -> str:
+    """Re-encode vault/file query params so Telegram markdown can parse the link."""
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    vault = query.get("vault", [""])[0]
+    file_path = query.get("file", [""])[0]
+    if not vault or not file_path:
+        return url
+    return build_obsid_net_url(file_path, vault=vault)
 
 
 def obsidian_uri_to_obsid_net_url(obsidian_uri: str) -> str:
@@ -67,18 +83,21 @@ def obsidian_uri_to_obsid_net_url(obsidian_uri: str) -> str:
         return obsidian_uri
 
     file_path = query.get("file", [""])[0]
-    obsid_query = urlencode({"vault": vault, "file": file_path}, quote_via=quote)
-    return f"{OBSID_NET_BASE}/?{obsid_query}"
+    return build_obsid_net_url(file_path, vault=vault)
 
 
 def preprocess_markdown_for_telegram(markdown: str) -> str:
-    """Normalize Obsidian deep links to obsid.net URLs Telegram can embed."""
+    """Normalize Obsidian / obsid.net links so Telegram can embed them."""
     text = _OBSIDIAN_MD_LINK_RE.sub(
         lambda match: f"[{match.group(1)}]({obsidian_uri_to_obsid_net_url(match.group(2))})",
         markdown,
     )
-    return _PLAIN_OBSIDIAN_URI_RE.sub(
+    text = _PLAIN_OBSIDIAN_URI_RE.sub(
         lambda match: obsidian_uri_to_obsid_net_url(match.group(1)),
+        text,
+    )
+    return _OBSID_NET_MD_LINK_RE.sub(
+        lambda match: f"[{match.group(1)}]({normalize_obsid_net_url(match.group(2))})",
         text,
     )
 
