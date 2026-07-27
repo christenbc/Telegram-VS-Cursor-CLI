@@ -17,14 +17,10 @@ def build_daily_prompt() -> str:
     except ValueError:
         fecha_madrid = now.strftime("%Y-%m-%d")
 
-    return f"""Buenos días. Hoy es {fecha_madrid}.
-
-Hazme un resumen matutino de mis tareas del vault:
-1. Tareas de hoy (scheduled o due hoy, hora Madrid)
-2. Tareas pendientes (status open o in-progress), agrupadas por prioridad y atraso
-3. Menciona subtareas si existen
-
-Sé conciso pero completo. Usa encabezados y listas."""
+    return (
+        f"Buenos días. Hoy es {fecha_madrid}.\n"
+        "Hazme el resumen matutino de mis tareas del vault."
+    )
 
 
 async def main() -> int:
@@ -37,6 +33,7 @@ async def main() -> int:
         await send_agent_prompt_to_telegram(
             build_daily_prompt(),
             timeout=AGENT_TIMEOUT,
+            include_tasknotes_skill=True,
         )
     except Exception as exc:
         print(f"Error enviando resumen diario: {exc}", file=sys.stderr)

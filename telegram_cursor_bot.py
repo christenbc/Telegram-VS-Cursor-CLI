@@ -26,6 +26,21 @@ CURSOR_AGENT_PATH = os.environ.get("CURSOR_AGENT_PATH", "/home/ubuntu/.local/bin
 AGENT_TIMEOUT = int(os.environ.get("AGENT_TIMEOUT", "120"))
 MAX_MESSAGE_UTF16 = 4096
 
+BOT_REPO_ROOT = Path(__file__).resolve().parent
+TASKNOTES_SKILL_PATH = (
+    BOT_REPO_ROOT / ".cursor/skills/obsidian-tasknotes/SKILL.md"
+)
+_TASKNOTES_SKILL_CACHE: tuple[float, str] | None = None
+
+_TASKNOTES_KEYWORDS_RE = re.compile(
+    r"\b("
+    r"tarea|tareas|task|tasks|tasknotes|tasknote|pendiente|pendientes|"
+    r"atrasad|overdue|due|scheduled|prioridad|priority|"
+    r"inbox|agenda|kanban"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _OBSIDIAN_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((obsidian://[^)\s]+)\)")
 _PLAIN_OBSIDIAN_URI_RE = re.compile(r"(?<!\])(obsidian://open\?[^\s)]+)")
 
@@ -72,56 +87,53 @@ def render_telegram_message(markdown: str) -> tuple[str, list]:
     return convert(preprocess_markdown_for_telegram(markdown))
 
 
-def _iter_task_note_paths() -> list[str]:
-    tasks_dir = Path(VAULT_PATH) / OBSIDIAN_TASKS_PREFIX
-    if not tasks_dir.is_dir():
-        return []
-
-    return sorted(
-        str(path.relative_to(VAULT_PATH).with_suffix("")).replace("\\", "/")
-        for path in tasks_dir.glob("*.md")
+def build_telegram_format_hint() -> str:
+    return (
+        "Importante: tu respuesta se mostrará en un chat de Telegram y se renderizará "
+        "como Markdown. Usa formato enriquecido cuando mejore la legibilidad:\n"
+        "- **negrita** y *cursiva* para énfasis\n"
+        "- `código inline` y bloques con ```\n"
+        "- listas con viñetas o numeradas\n"
+        "- encabezados (##), citas (>), ~~tachado~~, ||spoiler||\n"
+        "- emojis Unicode con moderación\n"
+        "No uses tablas Markdown (| col | col |): en Telegram se ven mal. "
+        "Para datos tabulares usa listas o líneas **Campo:** valor."
     )
 
 
-def build_telegram_format_hint() -> str:
-    example_note = f"{OBSIDIAN_TASKS_PREFIX}/Prepare slides for client meeting"
-    example_title = Path(example_note).name
-    example_uri = build_obsid_net_url(example_note)
-
-    lines = [
-        "Importante: tu respuesta se mostrará en un chat de Telegram y se renderizará "
-        "como Markdown. Usa formato enriquecido cuando mejore la legibilidad:",
-        "- **negrita** y *cursiva* para énfasis",
-        "- `código inline` y bloques con ```",
-        "- listas con viñetas o numeradas",
-        "- encabezados (##), citas (>), ~~tachado~~, ||spoiler||",
-        "- emojis Unicode con moderación",
-        "No uses tablas Markdown (| col | col |): en Telegram se ven mal. "
-        "Para datos tabulares usa listas o líneas **Campo:** valor.",
-        "",
-        "Cuando cites una tarea que existe como nota en el vault, enlaza su título "
-        "con obsid.net (redirector HTTPS a Obsidian):",
-        "- Formato: [título de la tarea](https://obsid.net/?vault=...&file=...)",
-        f"- vault: {OBSIDIAN_VAULT_NAME!r}",
-        "- file: ruta relativa al vault sin extensión .md",
-        f"- Ejemplo: [{example_title}]({example_uri})",
-    ]
-
-    task_paths = _iter_task_note_paths()
-    if task_paths:
-        lines.append("")
-        lines.append(
-            "Si mencionas alguna de estas tareas, enlaza su título con la URL exacta:"
-        )
-        for note_path in task_paths:
-            title = Path(note_path).name
-            uri = build_obsid_net_url(note_path)
-            lines.append(f"- [{title}]({uri})")
-
-    return "\n".join(lines)
-
-
 TELEGRAM_FORMAT_HINT = build_telegram_format_hint()
+
+
+def _template_tasknotes_skill(raw: str) -> str:
+    return raw.format(
+        OBSIDIAN_VAULT_NAME=OBSIDIAN_VAULT_NAME,
+        OBSIDIAN_TASKS_PREFIX=OBSIDIAN_TASKS_PREFIX,
+        OBSID_NET_BASE=OBSID_NET_BASE,
+    )
+
+
+def load_tasknotes_skill() -> str:
+    global _TASKNOTES_SKILL_CACHE
+
+    mtime = TASKNOTES_SKILL_PATH.stat().st_mtime
+    if _TASKNOTES_SKILL_CACHE and _TASKNOTES_SKILL_CACHE[0] == mtime:
+        return _TASKNOTES_SKILL_CACHE[1]
+
+    raw = TASKNOTES_SKILL_PATH.read_text(encoding="utf-8")
+    templated = _template_tasknotes_skill(raw)
+    _TASKNOTES_SKILL_CACHE = (mtime, templated)
+    return templated
+
+
+def should_include_tasknotes_skill(prompt: str) -> bool:
+    return bool(_TASKNOTES_KEYWORDS_RE.search(prompt))
+
+
+def build_agent_prompt(prompt: str, *, include_tasknotes_skill: bool = False) -> str:
+    parts = [prompt, TELEGRAM_FORMAT_HINT]
+    if include_tasknotes_skill:
+        parts.append(load_tasknotes_skill())
+    return "\n\n".join(parts)
 
 
 def _to_telegram_entities(entities):
@@ -131,9 +143,16 @@ def _to_telegram_entities(entities):
     return [TelegramMessageEntity(**entity.to_dict()) for entity in entities]
 
 
-async def run_agent_streaming(prompt: str, timeout: float = AGENT_TIMEOUT):
+async def run_agent_streaming(
+    prompt: str,
+    timeout: float = AGENT_TIMEOUT,
+    *,
+    include_tasknotes_skill: bool = False,
+):
     """Stream assistant text deltas from the Cursor agent CLI."""
-    full_prompt = f"{prompt}\n\n{TELEGRAM_FORMAT_HINT}"
+    full_prompt = build_agent_prompt(
+        prompt, include_tasknotes_skill=include_tasknotes_skill
+    )
 
     proc = await asyncio.create_subprocess_exec(
         CURSOR_AGENT_PATH,
@@ -267,10 +286,16 @@ async def send_agent_prompt_to_telegram(
     prompt: str,
     timeout: float = AGENT_TIMEOUT,
     chat_id: int = MY_CHAT_ID,
+    *,
+    include_tasknotes_skill: bool = False,
 ):
     """Run the agent with a prompt and send the full response to Telegram."""
     chunks: list[str] = []
-    async for chunk in run_agent_streaming(prompt, timeout=timeout):
+    async for chunk in run_agent_streaming(
+        prompt,
+        timeout=timeout,
+        include_tasknotes_skill=include_tasknotes_skill,
+    ):
         chunks.append(chunk)
 
     markdown = "".join(chunks).strip() or "Hecho, sin salida del agente."
@@ -317,7 +342,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mode="entity",
             interval=0.3,
         ) as stream:
-            async for chunk in run_agent_streaming(user_text):
+            async for chunk in run_agent_streaming(
+                user_text,
+                include_tasknotes_skill=should_include_tasknotes_skill(user_text),
+            ):
                 stream.feed(chunk)
 
             if not stream.buffer.strip():

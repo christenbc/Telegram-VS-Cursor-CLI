@@ -78,9 +78,18 @@ Follow-up resolution is **best-effort and fragile**. It may fail or pick the wro
 
 For reliable multi-turn behavior, the bot would need explicit session handling (e.g. prepend chat history to the prompt, or use `agent --continue` / `--resume <chatId>` with a stable ID per Telegram chat). That is not implemented today.
 
-### Task list in the formatting hint
+## TaskNotes skill
 
-`TELEGRAM_FORMAT_HINT` includes a list of task notes for obsid.net linking. It is built **once at bot startup** (`build_telegram_format_hint()`). Tasks created after the bot starts will not appear in that list until the process is restarted. The agent can still find new tasks by reading the vault directly.
+TaskNotes domain knowledge (frontmatter, fechas Madrid, enlaces obsid.net, estructura del resumen matutino) lives in [`.cursor/skills/obsidian-tasknotes/SKILL.md`](.cursor/skills/obsidian-tasknotes/SKILL.md).
+
+The bot injects this skill into the agent prompt when:
+
+- **Daily summary** — always (`include_tasknotes_skill=True` in `daily_task_summary.py`)
+- **Chat messages** — when the message matches task-related keywords (`tarea`, `pendiente`, `priority`, `scheduled`, etc.)
+
+The skill uses placeholders templated from `env.sh` at load time: `{OBSIDIAN_VAULT_NAME}`, `{OBSIDIAN_TASKS_PREFIX}`, `{OBSID_NET_BASE}`. Edits to the skill file are picked up automatically (cached by file mtime; no bot restart needed).
+
+Telegram formatting rules remain in `build_telegram_format_hint()` and are always appended to every prompt.
 
 ## Daily task summary (systemd timer)
 
