@@ -10,7 +10,7 @@ from telegram import Bot, MessageEntity as TelegramMessageEntity, Update
 from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from telegramify_markdown.converter import convert
-from telegramify_markdown.entity import split_entities
+from telegramify_markdown.entity import split_entities, utf16_len
 from telegramify_markdown.stream import DraftStream
 from telegramify_markdown.stream.draft import EntityDraftPayload, EntityFinalPayload
 
@@ -48,6 +48,8 @@ _OBSID_NET_MD_LINK_RE = re.compile(
     r"\[([^\]\n]+)\]\((" + re.escape(OBSID_NET_BASE) + r"/\?[^\)]+)\)",
     re.IGNORECASE,
 )
+# telegramify-markdown heading marker, or priority-group labels (📚 …).
+_SECTION_LINE_RE = re.compile(r"^(?:✏ |\U0001F4DA)")
 
 
 def build_obsid_net_url(relative_note_path: str, vault: str | None = None) -> str:
@@ -88,9 +90,11 @@ def obsidian_uri_to_obsid_net_url(obsidian_uri: str) -> str:
 
 def preprocess_markdown_for_telegram(markdown: str) -> str:
     """Normalize Obsidian / obsid.net links so Telegram can embed them."""
+    # ☐ (U+2610) often fails to render in Telegram clients; ⬜ is reliable.
+    text = markdown.replace("☐", "⬜")
     text = _OBSIDIAN_MD_LINK_RE.sub(
         lambda match: f"[{match.group(1)}]({obsidian_uri_to_obsid_net_url(match.group(2))})",
-        markdown,
+        text,
     )
     text = _PLAIN_OBSIDIAN_URI_RE.sub(
         lambda match: obsidian_uri_to_obsid_net_url(match.group(1)),
@@ -102,8 +106,50 @@ def preprocess_markdown_for_telegram(markdown: str) -> str:
     )
 
 
+def ensure_section_spacing(text: str, entities: list) -> tuple[str, list]:
+    """Insert a blank line before section headers when telegramify collapsed it.
+
+    Headings (✏ …) and priority-group labels (📚 …) often sit flush against
+    the previous list/paragraph; Telegram needs an extra newline for readability.
+    Entity offsets are UTF-16 and are shifted to match insertions.
+    """
+    if not text:
+        return text, entities
+
+    lines = text.split("\n")
+    out_lines: list[str] = []
+    insert_at_utf16: list[int] = []
+    utf16_pos = 0
+    prev_blank = True
+
+    for idx, line in enumerate(lines):
+        if _SECTION_LINE_RE.match(line) and not prev_blank and out_lines:
+            out_lines.append("")
+            insert_at_utf16.append(utf16_pos)
+            utf16_pos += 1  # inserted "\n"
+        out_lines.append(line)
+        if idx < len(lines) - 1:
+            utf16_pos += utf16_len(line) + 1
+        else:
+            utf16_pos += utf16_len(line)
+        prev_blank = line == ""
+
+    if not insert_at_utf16:
+        return text, entities
+
+    new_text = "\n".join(out_lines)
+    new_entities = []
+    for entity in entities:
+        shift = sum(1 for offset in insert_at_utf16 if offset <= entity.offset)
+        new_entities.append(
+            entity.copy_with(offset=entity.offset + shift) if shift else entity
+        )
+    return new_text, new_entities
+
+
 def render_telegram_message(markdown: str) -> tuple[str, list]:
-    return convert(preprocess_markdown_for_telegram(markdown))
+    text, entities = convert(preprocess_markdown_for_telegram(markdown))
+    return ensure_section_spacing(text, entities)
 
 
 def build_telegram_format_hint() -> str:
@@ -115,7 +161,8 @@ def build_telegram_format_hint() -> str:
         "- `código inline` y bloques con ```\n"
         "- listas con viñetas o numeradas\n"
         "- encabezados (##), citas (>), ~~tachado~~, ||spoiler||\n"
-        "- emojis Unicode con moderación\n"
+        "- emojis con moderación; no inventes iconos de metadatos (hora, recurrencia, etc.)\n"
+        "- deja una línea en blanco antes de cada encabezado o bloque de sección\n"
         "No uses tablas Markdown (| col | col |): en Telegram se ven mal. "
         "Para datos tabulares usa listas o líneas **Campo:** valor."
     )

@@ -72,6 +72,34 @@ Recommended structure:
 
 1. **Today's tasks** — `scheduled` or `due` today (Madrid time)
 2. **Pending** — `status` `open` or `in-progress`, grouped by priority and overdue status
-3. **Subtasks** — mention any found in each note's body
+3. **Subtasks** — nested under their parent task (not a separate top-level section)
 
 Be concise but complete. Use headings and lists.
+Leave a blank line before each heading or priority-group label.
+
+## Presentation and emojis
+
+**Allowed**
+
+- **Priority group labels** — stable icons by priority, always the same mapping:
+  - 🔴 high · 🟡 normal · 🟢 low
+  - Example: `📚 🟡 Prioridad normal — atrasadas`
+- **One semantic emoji per task** — choose a single emoji that fits the task’s meaning (title/body/tags/contexts), placed before the linked title.
+  - Examples: 🦷 dentist, 🛒 groceries, 💻 coding, 📞 phone call, 📊 slides/report
+  - Prefer the same emoji for the same task if it appears again in the reply
+- **Subtasks** — nest directly under the parent task as indented bullet items (`  - …`). Each subtask line: checkbox emoji, then one semantic emoji, then the text. Keep checked/unchecked from the note: `✅` for done, `⬜` for open (use `⬜`, not `☐` — `☐` often fails to render in Telegram). Do **not** use Markdown task-list syntax (`- [ ]` / `- [x]`): that drops the bullet in Telegram. Example:
+
+```
+- 💻 [Draft project proposal]({OBSID_NET_BASE}/?vault={OBSIDIAN_VAULT_NAME}&file=TaskNotes%2FTasks%2FDraft%20project%20proposal)
+  - ✅ 📋 Gather requirements from kickoff call
+  - ⬜ ✍️ Write scope and deliverables section
+  - ⬜ 📅 Add timeline and budget estimate
+```
+
+Do not dump all subtasks in a separate `## Subtareas` section.
+
+**Not allowed**
+
+- Do **not** invent metadata icons for frontmatter fields (`🔄` recurrence, `⏰` scheduled/due, status badges, etc.)
+- Do **not** invent ad-hoc emoji legends that change between replies
+- Do not stack many emojis on a parent-task line; at most one semantic emoji before the linked title. On subtask lines, checkbox + one semantic emoji is fine.
