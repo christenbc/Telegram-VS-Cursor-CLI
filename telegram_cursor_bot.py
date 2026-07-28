@@ -3,12 +3,15 @@ import json
 import logging
 import os
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import time
 
+from groq import AsyncGroq
 from telegram import Bot, MessageEntity as TelegramMessageEntity, Update
+from telegram.constants import ChatAction
 from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
@@ -33,6 +36,8 @@ OBSID_NET_BASE = os.environ.get("OBSID_NET_BASE", "https://obsid.net").rstrip("/
 CURSOR_AGENT_PATH = os.environ.get("CURSOR_AGENT_PATH", "/home/ubuntu/.local/bin/agent")
 AGENT_TIMEOUT = int(os.environ.get("AGENT_TIMEOUT", "120"))
 SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "2700"))
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+GROQ_WHISPER_MODEL = "whisper-large-v3"
 MAX_MESSAGE_UTF16 = 4096
 
 BOT_REPO_ROOT = Path(__file__).resolve().parent
@@ -446,17 +451,47 @@ async def send_agent_prompt_to_telegram(
         await _send_message_chunks(bot, chat_id, text, entities)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat_id != MY_CHAT_ID:
-        return
+async def transcribe_voice_message(bot, voice) -> str:
+    """Download a Telegram voice note and transcribe it via Groq Whisper."""
+    tg_file = await bot.get_file(voice.file_id)
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        await tg_file.download_to_drive(tmp_path)
+        client = AsyncGroq(api_key=GROQ_API_KEY)
+        transcription = await client.audio.transcriptions.create(
+            file=tmp_path,
+            model=GROQ_WHISPER_MODEL,
+        )
+        return transcription.text.strip()
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
-    user_text = update.message.text
+
+async def process_user_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_text: str,
+    *,
+    status_message=None,
+):
     chat_id = update.message.chat_id
     bot = context.bot
     resume_id = get_active_session(chat_id)
     session_id_holder: dict = {}
+    status_deleted = False
+
+    async def _clear_status_message():
+        nonlocal status_deleted
+        if status_message is not None and not status_deleted:
+            status_deleted = True
+            try:
+                await status_message.delete()
+            except BadRequest as exc:
+                logger.debug("Status message delete failed: %s", exc)
 
     async def send_draft_cb(payload):
+        await _clear_status_message()
         text, entities = render_telegram_message(stream.buffer)
         await _send_draft(
             bot,
@@ -469,6 +504,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     async def send_final_cb(payload):
+        await _clear_status_message()
         text, entities = render_telegram_message(stream.buffer)
         await _send_final(
             bot,
@@ -499,14 +535,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except TimeoutError as e:
         if stream is not None:
             await stream.cancel()
+        await _clear_status_message()
         await bot.send_message(chat_id=chat_id, text=f"Error: {e}")
     except Exception as e:
         if stream is not None:
             await stream.cancel()
+        await _clear_status_message()
         await bot.send_message(chat_id=chat_id, text=f"Error: {e}")
     finally:
         if session_id_holder.get("session_id"):
             set_session(chat_id, session_id_holder["session_id"])
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id != MY_CHAT_ID:
+        return
+    await process_user_text(update, context, update.message.text)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id != MY_CHAT_ID:
+        return
+
+    chat_id = update.message.chat_id
+    bot = context.bot
+
+    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    status_msg = await bot.send_message(
+        chat_id=chat_id,
+        text="🎙️ Transcribiendo audio...",
+        reply_to_message_id=update.message.message_id,
+    )
+
+    try:
+        transcript = await transcribe_voice_message(bot, update.message.voice)
+    except Exception as e:
+        await status_msg.edit_text(f"Error transcribiendo audio: {e}")
+        return
+
+    if not transcript:
+        await status_msg.edit_text("No se detectó texto en el audio.")
+        return
+
+    await process_user_text(update, context, transcript, status_message=status_msg)
 
 
 async def handle_new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -524,6 +595,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("new", handle_new_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.run_polling()
 
 

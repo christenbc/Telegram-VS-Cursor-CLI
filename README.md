@@ -33,6 +33,7 @@ Shared config lives in `env.sh` (copy from `env.sh.example`). Both the bot and t
 | `CURSOR_AGENT_PATH` | no | Path to the `agent` binary (default: `/home/ubuntu/.local/bin/agent`) |
 | `AGENT_TIMEOUT` | no | Agent timeout in seconds (default: `120`) |
 | `SESSION_IDLE_TIMEOUT` | no | Seconds of inactivity after which a chat's session is no longer resumed and a fresh one starts (default: `2700`, 45 min) |
+| `GROQ_API_KEY` | yes | Groq API key used to transcribe voice notes (get one at [console.groq.com/keys](https://console.groq.com/keys)) |
 
 ## Run
 
@@ -70,6 +71,20 @@ Example:
 - A bot restart does not lose an active session (it's persisted to `sessions.json`), but if the process is killed mid-run before any event with a `session_id` was read, that turn's context isn't saved.
 - Only one session per `chat_id` is tracked; since the bot only replies to `TELEGRAM_CHAT_ID`, there is effectively a single ongoing conversation at a time.
 - `daily_task_summary.py` (via `send_agent_prompt_to_telegram`) intentionally stays stateless — it's a scheduled one-shot job, not a conversation.
+
+## Transcripción de voz (Groq Whisper)
+
+Las notas de voz de Telegram se transcriben automáticamente a texto usando el modelo `whisper-large-v3` de [Groq](https://console.groq.com/docs/model/whisper-large-v3) y se procesan como si fueran un mensaje de texto normal:
+
+```
+Nota de voz  →  descarga (.oga)  →  Groq whisper-large-v3  →  texto  →  agente de Cursor  →  respuesta
+```
+
+La transcripción se procesa en silencio (no se muestra al usuario); solo se ve la respuesta final del agente. Si la transcripción falla o el audio no contiene texto detectable, el bot responde con un mensaje de error en vez de invocar al agente.
+
+Requiere la variable `GROQ_API_KEY` (ver tabla de variables de entorno). El límite de Groq es de 25 MB por archivo de audio, muy por encima de lo que ocupa una nota de voz típica de Telegram.
+
+Por ahora solo se procesan mensajes de tipo nota de voz (`voice`); los archivos de audio adjuntos (mp3, m4a, etc.) no se transcriben todavía.
 
 ## TaskNotes skill
 
