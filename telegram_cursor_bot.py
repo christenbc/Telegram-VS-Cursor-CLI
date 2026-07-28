@@ -6,9 +6,17 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
+import time
+
 from telegram import Bot, MessageEntity as TelegramMessageEntity, Update
 from telegram.error import BadRequest
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from telegramify_markdown.converter import convert
 from telegramify_markdown.entity import split_entities, utf16_len
 from telegramify_markdown.stream import DraftStream
@@ -24,9 +32,11 @@ OBSIDIAN_TASKS_PREFIX = os.environ.get("OBSIDIAN_TASKS_PREFIX", "TaskNotes/Tasks
 OBSID_NET_BASE = os.environ.get("OBSID_NET_BASE", "https://obsid.net").rstrip("/")
 CURSOR_AGENT_PATH = os.environ.get("CURSOR_AGENT_PATH", "/home/ubuntu/.local/bin/agent")
 AGENT_TIMEOUT = int(os.environ.get("AGENT_TIMEOUT", "120"))
+SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "2700"))
 MAX_MESSAGE_UTF16 = 4096
 
 BOT_REPO_ROOT = Path(__file__).resolve().parent
+SESSIONS_PATH = BOT_REPO_ROOT / "sessions.json"
 TASKNOTES_SKILL_PATH = (
     BOT_REPO_ROOT / ".cursor/skills/obsidian-tasknotes/SKILL.md"
 )
@@ -164,7 +174,12 @@ def build_telegram_format_hint() -> str:
         "- emojis con moderación; no inventes iconos de metadatos (hora, recurrencia, etc.)\n"
         "- deja una línea en blanco antes de cada encabezado o bloque de sección\n"
         "No uses tablas Markdown (| col | col |): en Telegram se ven mal. "
-        "Para datos tabulares usa listas o líneas **Campo:** valor."
+        "Para datos tabulares usa listas o líneas **Campo:** valor.\n\n"
+        "Si el pedido es ambiguo, falta información clave, o vas a realizar una acción "
+        "irreversible o difícil de deshacer (borrar, sobrescribir, ejecutar comandos con "
+        "efectos secundarios) y no estás seguro de la intención del usuario, pregunta "
+        "primero en lugar de asumir. La conversación tiene memoria: el usuario podrá "
+        "responder tu pregunta en su siguiente mensaje y retomarás el contexto."
     )
 
 
@@ -203,6 +218,45 @@ def build_agent_prompt(prompt: str, *, include_tasknotes_skill: bool = False) ->
     return "\n\n".join(parts)
 
 
+def load_sessions() -> dict:
+    """Load the chat_id -> {session_id, updated_at} map from disk."""
+    try:
+        with SESSIONS_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_sessions(data: dict) -> None:
+    tmp_path = SESSIONS_PATH.with_suffix(".json.tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f)
+    tmp_path.replace(SESSIONS_PATH)
+
+
+def get_active_session(chat_id: int) -> str | None:
+    """Return the session_id to resume for this chat, or None to start fresh."""
+    sessions = load_sessions()
+    entry = sessions.get(str(chat_id))
+    if not entry:
+        return None
+    if time.time() - entry.get("updated_at", 0) > SESSION_IDLE_TIMEOUT:
+        return None
+    return entry.get("session_id")
+
+
+def set_session(chat_id: int, session_id: str) -> None:
+    sessions = load_sessions()
+    sessions[str(chat_id)] = {"session_id": session_id, "updated_at": time.time()}
+    save_sessions(sessions)
+
+
+def clear_session(chat_id: int) -> None:
+    sessions = load_sessions()
+    if sessions.pop(str(chat_id), None) is not None:
+        save_sessions(sessions)
+
+
 def _to_telegram_entities(entities):
     """Convert telegramify-markdown entities to python-telegram-bot MessageEntity."""
     if not entities:
@@ -215,13 +269,23 @@ async def run_agent_streaming(
     timeout: float = AGENT_TIMEOUT,
     *,
     include_tasknotes_skill: bool = False,
+    resume_session_id: str | None = None,
+    session_id_holder: dict | None = None,
 ):
-    """Stream assistant text deltas from the Cursor agent CLI."""
+    """Stream assistant text deltas from the Cursor agent CLI.
+
+    If `resume_session_id` is set, the CLI resumes that chat session instead
+    of starting a new one, preserving full conversation context (including
+    any clarifying question the agent asked in a previous turn). The
+    session_id of the run (new or resumed) is written into
+    `session_id_holder["session_id"]` as soon as it is known, so the caller
+    can persist it even if the run later fails or times out.
+    """
     full_prompt = build_agent_prompt(
         prompt, include_tasknotes_skill=include_tasknotes_skill
     )
 
-    proc = await asyncio.create_subprocess_exec(
+    args = [
         CURSOR_AGENT_PATH,
         "-p",
         "--output-format",
@@ -232,7 +296,13 @@ async def run_agent_streaming(
         "--force",
         "--model",
         "composer-2.5-fast",
-        full_prompt,
+    ]
+    if resume_session_id:
+        args += ["--resume", resume_session_id]
+    args.append(full_prompt)
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -256,6 +326,9 @@ async def run_agent_streaming(
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+            if session_id_holder is not None and event.get("session_id"):
+                session_id_holder["session_id"] = event["session_id"]
 
             event_type = event.get("type")
             # Real deltas have timestamp_ms but no model_call_id. Once a
@@ -380,6 +453,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     chat_id = update.message.chat_id
     bot = context.bot
+    resume_id = get_active_session(chat_id)
+    session_id_holder: dict = {}
 
     async def send_draft_cb(payload):
         text, entities = render_telegram_message(stream.buffer)
@@ -412,6 +487,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async for chunk in run_agent_streaming(
                 user_text,
                 include_tasknotes_skill=should_include_tasknotes_skill(user_text),
+                resume_session_id=resume_id,
+                session_id_holder=session_id_holder,
             ):
                 stream.feed(chunk)
 
@@ -427,11 +504,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stream is not None:
             await stream.cancel()
         await bot.send_message(chat_id=chat_id, text=f"Error: {e}")
+    finally:
+        if session_id_holder.get("session_id"):
+            set_session(chat_id, session_id_holder["session_id"])
+
+
+async def handle_new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id != MY_CHAT_ID:
+        return
+
+    clear_session(update.message.chat_id)
+    await context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="Listo, empezamos una conversación nueva (sin contexto previo).",
+    )
 
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    app.add_handler(CommandHandler("new", handle_new_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 
 

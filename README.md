@@ -32,6 +32,7 @@ Shared config lives in `env.sh` (copy from `env.sh.example`). Both the bot and t
 | `OBSID_NET_BASE` | no | Obsidian link redirector base URL (default: `https://obsid.net`) |
 | `CURSOR_AGENT_PATH` | no | Path to the `agent` binary (default: `/home/ubuntu/.local/bin/agent`) |
 | `AGENT_TIMEOUT` | no | Agent timeout in seconds (default: `120`) |
+| `SESSION_IDLE_TIMEOUT` | no | Seconds of inactivity after which a chat's session is no longer resumed and a fresh one starts (default: `2700`, 45 min) |
 
 ## Run
 
@@ -40,43 +41,35 @@ source env.sh
 python telegram_cursor_bot.py
 ```
 
-## Conversation context (stateless bot)
+## Conversation context (per-chat sessions)
 
-The bot does **not** store Telegram chat history. Each incoming message starts a **new** Cursor Agent process with only that message as the prompt (plus a static Telegram formatting hint). The bot does not pass `--continue` or `--resume` to the CLI.
+The bot keeps a lightweight session per Telegram chat so the agent can ask a clarifying question and pick up the conversation when you reply, instead of starting from scratch on every message.
 
 ```
-Telegram message  →  telegram_cursor_bot.py  →  agent -p "<your text>"  →  response
-                         (no history)              (new process every time)
+Message 1  →  agent -p "<text>"                    →  response + session_id S1 (saved to sessions.json)
+Message 2  →  agent -p --resume S1 "<text>"        →  response (full context of turn 1, incl. any question it asked)
 ```
 
-This means short follow-ups like *"yes, set it to high priority"* are **not** resolved by the bot remembering the previous turn.
+How it works:
 
-### Why follow-ups can still work
+1. Every response from `agent -p --output-format stream-json` carries a `session_id`. The bot captures it and persists a `{chat_id: {session_id, updated_at}}` map in `sessions.json` (git-ignored) next to the bot.
+2. On the next message from the same chat, if the stored session is younger than `SESSION_IDLE_TIMEOUT` (default 45 min), the bot calls the agent with `--resume <session_id>` so it remembers everything from the previous turn — including a question it asked and is waiting on.
+3. If the idle timeout has passed, the bot starts a brand-new session automatically (no stale context leaks into an unrelated message).
+4. The system prompt (`build_telegram_format_hint()`) explicitly tells the agent to ask a clarifying question instead of guessing when a request is ambiguous or would trigger an irreversible action, and reminds it that the conversation has memory across Telegram messages.
+5. Send `/new` at any time to drop the current session and start a fresh, context-free conversation on your next message.
 
-The agent has full tool access (read files, shell, grep, etc.) over `VAULT_PATH`. When a follow-up is ambiguous, it may reconstruct context by inspecting the environment:
-
-1. **Vault artifacts** — e.g. a task note created seconds ago with a recent `dateCreated` / `dateModified`.
-2. **Agent session transcripts** — Cursor stores CLI session logs under `~/.cursor/projects/<workspace>/agent-transcripts/`. The agent can list and read recent sessions to connect a reply like *"sí, ponle prioridad alta"* to a prior turn that asked *"¿Quieres que le ponga prioridad…?"*.
-3. **Prompt wording** — replies such as *"sí"* only make sense when tied to a specific yes/no question in the previous session.
-
-Example (two separate agent runs, two minutes apart):
+Example:
 
 | Time | User message | What happened |
 |------|--------------|---------------|
-| 18:50 | *"create a task to buy dog diapers in 3 days"* | Agent creates `TaskNotes/Tasks/Comprar pañales para la perra.md` and asks whether to change priority. |
-| 18:52 | *"sí, ponle prioridad alta"* | New agent run; bot sends only this text. Agent finds the new task file and reads the previous session transcript, then updates `priority: high`. |
-
-This is **inference**, not guaranteed conversation memory.
+| 18:50 | *"create a task to buy dog diapers in 3 days"* | Agent creates the task, but asks whether to set it to high priority. Session `S1` is saved. |
+| 18:52 | *"sí, ponle prioridad alta"* | Bot resumes `S1`; the agent remembers its own question and updates `priority: high` on the same note. |
 
 ### Limitations
 
-Follow-up resolution is **best-effort and fragile**. It may fail or pick the wrong target when:
-
-- Several tasks or notes were changed recently.
-- The follow-up does not reference something unambiguous (no clear *"sí"* / *"that one"* / task name).
-- Transcripts or vault files are unavailable.
-
-For reliable multi-turn behavior, the bot would need explicit session handling (e.g. prepend chat history to the prompt, or use `agent --continue` / `--resume <chatId>` with a stable ID per Telegram chat). That is not implemented today.
+- A bot restart does not lose an active session (it's persisted to `sessions.json`), but if the process is killed mid-run before any event with a `session_id` was read, that turn's context isn't saved.
+- Only one session per `chat_id` is tracked; since the bot only replies to `TELEGRAM_CHAT_ID`, there is effectively a single ongoing conversation at a time.
+- `daily_task_summary.py` (via `send_agent_prompt_to_telegram`) intentionally stays stateless — it's a scheduled one-shot job, not a conversation.
 
 ## TaskNotes skill
 
