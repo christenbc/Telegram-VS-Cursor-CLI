@@ -5,7 +5,17 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from telegram_cursor_bot import AGENT_TIMEOUT, send_agent_prompt_to_telegram
+from telegram import Bot
+
+from telegram_cursor_bot import (
+    AGENT_TIMEOUT,
+    MY_CHAT_ID,
+    TOKEN,
+    get_active_vault,
+    migrate_legacy_sessions,
+    send_agent_prompt_to_telegram,
+    send_vault_picker,
+)
 
 MADRID_TZ = ZoneInfo("Europe/Madrid")
 
@@ -29,11 +39,30 @@ async def main() -> int:
     except locale.Error:
         pass
 
+    migrate_legacy_sessions()
+
+    vault = get_active_vault(MY_CHAT_ID)
+    if vault is None:
+        try:
+            bot = Bot(TOKEN)
+            async with bot:
+                await send_vault_picker(
+                    bot,
+                    MY_CHAT_ID,
+                    "No hay vault elegido. Elige uno para recibir el resumen diario:",
+                )
+        except Exception as exc:
+            print(f"Error enviando recordatorio de vault: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     try:
         await send_agent_prompt_to_telegram(
             build_daily_prompt(),
             timeout=AGENT_TIMEOUT,
             include_tasknotes_skill=True,
+            workspace_path=vault.path,
+            obsidian_vault_name=vault.obsidian_name,
         )
     except Exception as exc:
         print(f"Error enviando resumen diario: {exc}", file=sys.stderr)

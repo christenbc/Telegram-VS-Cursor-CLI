@@ -26,9 +26,10 @@ Shared config lives in `env.sh` (copy from `env.sh.example`). Both the bot and t
 |----------|----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from BotFather |
 | `TELEGRAM_CHAT_ID` | yes | Your Telegram user/chat ID (bot only replies to this chat) |
-| `VAULT_PATH` | no | Workspace path passed to `agent --workspace` (default: `/home/ubuntu/vaults/test`) |
-| `OBSIDIAN_VAULT_NAME` | no | Obsidian vault name for task links (default: `Testing`) |
-| `OBSIDIAN_TASKS_PREFIX` | no | Folder inside the vault where task notes live (default: `TaskNotes/Tasks`) |
+| `VAULT_PATH` | no | Legacy default for internal function signatures (default: `/home/ubuntu/vaults/test`); not used by chat or daily summary |
+| `OBSIDIAN_VAULT_NAME` | no | Legacy default Obsidian name for internal signatures (default: `Testing`); not used by chat or daily summary |
+| `VAULTS_ROOT` | no | Root folder scanned for vault subdirectories used by `/vault` (default: `/home/ubuntu/vaults`) |
+| `OBSIDIAN_TASKS_PREFIX` | no | Folder inside the vault where task notes live, shared across all vaults (default: `TaskNotes/Tasks`) |
 | `OBSID_NET_BASE` | no | Obsidian link redirector base URL (default: `https://obsid.net`) |
 | `CURSOR_AGENT_PATH` | no | Path to the `agent` binary (default: `/home/ubuntu/.local/bin/agent`) |
 | `AGENT_TIMEOUT` | no | Agent timeout in seconds (default: `120`) |
@@ -42,18 +43,43 @@ source env.sh
 python telegram_cursor_bot.py
 ```
 
+## Vaults (`/vault`)
+
+The bot can work with multiple Obsidian vaults. Every subdirectory of `VAULTS_ROOT` (default `/home/ubuntu/vaults`) is auto-discovered as a vault; the folder name is its alias (e.g. `test`, `personal`). If a vault folder has a `.obsidian/app.json` with a `vaultName` field, that's used as the display/link name — otherwise the alias is capitalized (`test` → `Test`).
+
+**A vault must be chosen explicitly before the bot will talk to the agent.** There is no silent fallback to `env.sh`'s `VAULT_PATH`/`OBSIDIAN_VAULT_NAME`. If you send a text or voice message before picking a vault, the bot replies with a picker instead of calling the agent:
+
+```
+Tú:   ¿qué tareas tengo pendientes?
+Bot:  Elige un vault para continuar:
+      [test]  [personal]  [trabajo]
+
+Tú:   (tap en personal)
+Bot:  Vault activo: personal. Ya puedes escribirme.
+```
+
+Use `/vault` any time to see the active vault and switch:
+
+```
+Tú:   /vault
+Bot:  Vault activo: personal
+      [test]  [✓ personal]  [trabajo]
+```
+
+Switching vaults always resets the conversation (`clear_session`), since the agent's context is tied to a specific workspace. The vault choice is persisted per chat in `chat_state.json` (git-ignored); the file is auto-migrated from the older `sessions.json` format the first time the bot starts after upgrading (existing sessions keep working, but you'll still need to pick a vault once).
+
 ## Conversation context (per-chat sessions)
 
 The bot keeps a lightweight session per Telegram chat so the agent can ask a clarifying question and pick up the conversation when you reply, instead of starting from scratch on every message.
 
 ```
-Message 1  →  agent -p "<text>"                    →  response + session_id S1 (saved to sessions.json)
+Message 1  →  agent -p "<text>"                    →  response + session_id S1 (saved to chat_state.json)
 Message 2  →  agent -p --resume S1 "<text>"        →  response (full context of turn 1, incl. any question it asked)
 ```
 
 How it works:
 
-1. Every response from `agent -p --output-format stream-json` carries a `session_id`. The bot captures it and persists a `{chat_id: {session_id, updated_at}}` map in `sessions.json` (git-ignored) next to the bot.
+1. Every response from `agent -p --output-format stream-json` carries a `session_id`. The bot captures it and persists a `{chat_id: {vault_alias, session_id, updated_at}}` map in `chat_state.json` (git-ignored) next to the bot.
 2. On the next message from the same chat, if the stored session is younger than `SESSION_IDLE_TIMEOUT` (default 45 min), the bot calls the agent with `--resume <session_id>` so it remembers everything from the previous turn — including a question it asked and is waiting on.
 3. If the idle timeout has passed, the bot starts a brand-new session automatically (no stale context leaks into an unrelated message).
 4. The system prompt (`build_telegram_format_hint()`) explicitly tells the agent to ask a clarifying question instead of guessing when a request is ambiguous or would trigger an irreversible action, and reminds it that the conversation has memory across Telegram messages.
@@ -68,9 +94,9 @@ Example:
 
 ### Limitations
 
-- A bot restart does not lose an active session (it's persisted to `sessions.json`), but if the process is killed mid-run before any event with a `session_id` was read, that turn's context isn't saved.
+- A bot restart does not lose an active session (it's persisted to `chat_state.json`), but if the process is killed mid-run before any event with a `session_id` was read, that turn's context isn't saved.
 - Only one session per `chat_id` is tracked; since the bot only replies to `TELEGRAM_CHAT_ID`, there is effectively a single ongoing conversation at a time.
-- `daily_task_summary.py` (via `send_agent_prompt_to_telegram`) intentionally stays stateless — it's a scheduled one-shot job, not a conversation.
+- `daily_task_summary.py` is a scheduled one-shot job (not a conversation) and does not resume chat sessions.
 
 ## Transcripción de voz (Groq Whisper)
 
@@ -95,13 +121,15 @@ The bot injects this skill into the agent prompt when:
 - **Daily summary** — always (`include_tasknotes_skill=True` in `daily_task_summary.py`)
 - **Chat messages** — when the message matches task-related keywords (`tarea`, `pendiente`, `priority`, `scheduled`, etc.)
 
-The skill uses placeholders templated from `env.sh` at load time: `{OBSIDIAN_VAULT_NAME}`, `{OBSIDIAN_TASKS_PREFIX}`, `{OBSID_NET_BASE}`. Edits to the skill file are picked up automatically (cached by file mtime; no bot restart needed).
+The skill is templated with `{OBSIDIAN_VAULT_NAME}` (the active chat's vault), `{OBSIDIAN_TASKS_PREFIX}` and `{OBSID_NET_BASE}` (both global, from `env.sh`). Edits to the skill file are picked up automatically (cached by file mtime + vault name; no bot restart needed).
 
 Telegram formatting rules remain in `build_telegram_format_hint()` and are always appended to every prompt.
 
 ## Daily task summary (systemd timer)
 
-`daily_task_summary.py` asks the Cursor Agent for a morning summary of today's and pending tasks from the Obsidian vault, then sends it to your Telegram chat.
+`daily_task_summary.py` asks the Cursor Agent for a morning summary of today's and pending tasks from the **vault you have selected in Telegram** (`vault_alias` in `chat_state.json` for `TELEGRAM_CHAT_ID`), then sends it to your chat.
+
+If no vault is selected yet, the job sends a Telegram reminder with the inline vault picker instead of calling the agent. Changing vault in Telegram affects the next scheduled summary automatically — no service restart needed.
 
 Test manually:
 
