@@ -20,7 +20,7 @@ cp env.sh.example env.sh
 
 ## Environment variables
 
-Shared config lives in `env.sh` (copy from `env.sh.example`). Both the bot and the daily summary cron source this file.
+Shared config lives in `env.sh` (copy from `env.sh.example`). The bot and the daily systemd jobs (`daily_task_summary.py`, `daily_completed_to_journal.py`) source this file.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -147,6 +147,44 @@ systemctl list-timers daily-summary.timer
 ```
 
 Logs are written to `logs/daily_summary.log`.
+
+## Daily completed → journal (systemd timer)
+
+`daily_completed_to_journal.py` scans TaskNotes in the **active Telegram vault**, finds tasks completed the previous calendar day (Europe/Madrid), and appends them to that day's journal note:
+
+- Habit tasks (`contexts` includes `habits`): `- [x] [[task title]]`
+- Other tasks: `[[task title]]`
+
+```markdown
+- [x] [[Pon la lavadora 🧼]]
+[[emviar paquete con leash]]
+```
+
+A task counts as completed yesterday if:
+
+- `status: done` and `completedDate: YYYY-MM-DD` matches yesterday, or
+- yesterday appears under `complete_instances` (recurring habits)
+
+The journal file is discovered by filename only (`YYYY-MM-DD.md` anywhere under the vault, excluding `.obsidian`), so vaults need not share the same folder layout. If several matches exist, the shallowest path wins. If none exist and there is something to dump, the note is created at the vault root. Re-runs are idempotent (existing lines in the correct form are left alone; legacy/plain or wrong-format lines for the same task are upgraded in place).
+
+The job always notifies Telegram with what was dumped (or that nothing was new). If no vault is selected, it sends the vault picker instead.
+
+Test manually:
+
+```bash
+./run_daily_completed_journal.sh
+```
+
+Schedule every day at **08:00** Madrid time (before the 08:30 morning summary):
+
+```bash
+sudo cp daily-completed-journal.service daily-completed-journal.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now daily-completed-journal.timer
+systemctl list-timers daily-completed-journal.timer
+```
+
+Logs are written to `logs/daily_completed_journal.log`.
 
 ## systemd example (bot)
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Dump yesterday's completed tasks into the daily journal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=/home/ubuntu/Telegram-VS-Cursor-CLI/env.sh
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/home/ubuntu/Telegram-VS-Cursor-CLI
+ExecStart=/home/ubuntu/Telegram-VS-Cursor-CLI/run_daily_completed_journal.sh
+StandardOutput=append:/home/ubuntu/Telegram-VS-Cursor-CLI/logs/daily_completed_journal.log
+StandardError=append:/home/ubuntu/Telegram-VS-Cursor-CLI/logs/daily_completed_journal.log
