@@ -20,7 +20,7 @@ cp env.sh.example env.sh
 
 ## Environment variables
 
-Shared config lives in `env.sh` (copy from `env.sh.example`). The bot and the daily systemd jobs (`daily_task_summary.py`, `daily_completed_to_journal.py`) source this file.
+Shared config lives in `env.sh` (copy from `env.sh.example`). The bot and the scheduled systemd jobs (`daily_task_summary.py`, `daily_completed_to_journal.py`, `monthly_archive_completed_tasks.py`) source this file.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -185,6 +185,42 @@ systemctl list-timers daily-completed-journal.timer
 ```
 
 Logs are written to `logs/daily_completed_journal.log`.
+
+## Monthly archive completed tasks (systemd timer)
+
+`monthly_archive_completed_tasks.py` scans TaskNotes in the **active Telegram vault** and archives one-shot completed tasks whose `completedDate` is older than one calendar month (Europe/Madrid cutoff: first day of the current month minus one month).
+
+For each eligible task:
+
+- Adds the `archived` tag to frontmatter (if missing)
+- Moves the note from `TaskNotes/Tasks/` to `TaskNotes/Archive/`
+
+A task is eligible when:
+
+- `status: done`
+- `completedDate: YYYY-MM-DD` is present and strictly before the cutoff
+- It is not a recurring habit (`contexts` does not include `habits`)
+
+Recurring habits are never archived. If a file with the same name already exists in Archive, the task is skipped and reported as a conflict (no overwrite). Re-runs are idempotent.
+
+The job always notifies Telegram with what was archived (or that nothing was new). If no vault is selected, it sends the vault picker instead.
+
+Test manually:
+
+```bash
+./run_monthly_archive_completed_tasks.sh
+```
+
+Schedule on the **1st of each month at 00:30** Madrid time (right after month-end; avoids firing on days 28–31):
+
+```bash
+sudo cp monthly-archive-completed-tasks.service monthly-archive-completed-tasks.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now monthly-archive-completed-tasks.timer
+systemctl list-timers monthly-archive-completed-tasks.timer
+```
+
+Logs are written to `logs/monthly_archive_completed_tasks.log`.
 
 ## systemd example (bot)
 
