@@ -50,6 +50,8 @@ SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "2700"))
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_WHISPER_MODEL = "whisper-large-v3"
 MAX_MESSAGE_UTF16 = 4096
+# Telegram allows ~100 entities per message; keep a margin for dense link lists.
+MAX_ENTITIES_PER_MESSAGE = 90
 # asyncio readline() default is 64 KiB; agent stream-json can emit longer lines.
 SUBPROCESS_STREAM_LIMIT = 1024 * 1024
 
@@ -402,6 +404,204 @@ def _to_telegram_entities(entities):
     return [TelegramMessageEntity(**entity.to_dict()) for entity in entities]
 
 
+def _utf16_offset_table(text: str) -> list[int]:
+    offsets = [0] * (len(text) + 1)
+    cum = 0
+    for i, ch in enumerate(text):
+        offsets[i] = cum
+        cum += 2 if ord(ch) > 0xFFFF else 1
+    offsets[len(text)] = cum
+    return offsets
+
+
+def _clip_entities_to_range(
+    entities: list,
+    utf16_start: int,
+    utf16_end: int,
+    chunk_utf16_start: int,
+) -> list:
+    clipped: list = []
+    for ent in entities:
+        ent_start = ent.offset
+        ent_end = ent.offset + ent.length
+        if ent_end <= utf16_start or ent_start >= utf16_end:
+            continue
+        clipped_start = max(ent_start, utf16_start)
+        clipped_end = min(ent_end, utf16_end)
+        clipped_length = clipped_end - clipped_start
+        if clipped_length <= 0:
+            continue
+        clipped.append(
+            ent.copy_with(
+                offset=clipped_start - chunk_utf16_start,
+                length=clipped_length,
+            )
+        )
+    return clipped
+
+
+def _chunk_within_limits(
+    chunk_text: str,
+    chunk_entities: list,
+    *,
+    max_utf16_len: int,
+    max_entities: int,
+) -> bool:
+    return (
+        utf16_len(chunk_text) <= max_utf16_len
+        and len(chunk_entities) <= max_entities
+    )
+
+
+def _split_lines_by_budget(
+    text: str,
+    entities: list,
+    *,
+    max_utf16_len: int,
+    max_entities: int,
+) -> list[tuple[str, list]]:
+    """Greedy line packing when entity count exceeds Telegram's per-message limit."""
+    offsets = _utf16_offset_table(text)
+    line_spans: list[tuple[int, int]] = []
+    py_start = 0
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            line_spans.append((py_start, i + 1))
+            py_start = i + 1
+    if py_start < len(text):
+        line_spans.append((py_start, len(text)))
+
+    chunks: list[tuple[str, list]] = []
+    group_start_py: int | None = None
+    group_end_py: int | None = None
+
+    def _flush_group() -> None:
+        nonlocal group_start_py, group_end_py
+        if group_start_py is None or group_end_py is None:
+            return
+        chunk_text = text[group_start_py:group_end_py]
+        utf16_start = offsets[group_start_py]
+        chunk_entities = _clip_entities_to_range(
+            entities, utf16_start, offsets[group_end_py], utf16_start
+        )
+        if chunk_text.strip():
+            chunks.append((chunk_text, chunk_entities))
+        group_start_py = None
+        group_end_py = None
+
+    for line_start_py, line_end_py in line_spans:
+        line_text = text[line_start_py:line_end_py]
+        line_utf16_start = offsets[line_start_py]
+        line_utf16_end = offsets[line_end_py]
+        line_entities = _clip_entities_to_range(
+            entities, line_utf16_start, line_utf16_end, line_utf16_start
+        )
+        line_len = line_utf16_end - line_utf16_start
+
+        if group_start_py is None:
+            if line_len > max_utf16_len or len(line_entities) > max_entities:
+                if line_text.strip():
+                    chunks.append(
+                        (
+                            line_text,
+                            line_entities
+                            if len(line_entities) <= max_entities
+                            else [],
+                        )
+                    )
+                continue
+            group_start_py = line_start_py
+            group_end_py = line_end_py
+            continue
+
+        combined_len = offsets[line_end_py] - offsets[group_start_py]
+        combined_entities = _clip_entities_to_range(
+            entities,
+            offsets[group_start_py],
+            offsets[line_end_py],
+            offsets[group_start_py],
+        )
+        if combined_len <= max_utf16_len and len(combined_entities) <= max_entities:
+            group_end_py = line_end_py
+            continue
+
+        _flush_group()
+        if line_len > max_utf16_len or len(line_entities) > max_entities:
+            if line_text.strip():
+                chunks.append(
+                    (
+                        line_text,
+                        line_entities
+                        if len(line_entities) <= max_entities
+                        else [],
+                    )
+                )
+        else:
+            group_start_py = line_start_py
+            group_end_py = line_end_py
+
+    _flush_group()
+    return chunks
+
+
+def _pack_telegram_chunks(
+    text: str,
+    entities: list,
+    *,
+    max_utf16_len: int = MAX_MESSAGE_UTF16,
+    max_entities: int = MAX_ENTITIES_PER_MESSAGE,
+) -> list[tuple[str, list]]:
+    """Split a message into chunks that fit Telegram text and entity limits."""
+    if not text.strip():
+        return []
+
+    pending = list(split_entities(text, entities, max_utf16_len))
+    packed: list[tuple[str, list]] = []
+    while pending:
+        chunk_text, chunk_entities = pending.pop(0)
+        if _chunk_within_limits(
+            chunk_text,
+            chunk_entities,
+            max_utf16_len=max_utf16_len,
+            max_entities=max_entities,
+        ):
+            if chunk_text.strip():
+                packed.append((chunk_text, chunk_entities))
+            continue
+
+        text_len = utf16_len(chunk_text)
+        if text_len > max_utf16_len:
+            sub_limit = max(1, text_len // 2)
+        else:
+            sub_limit = max(
+                1,
+                int(text_len * max_entities / max(len(chunk_entities), 1)),
+            )
+
+        sub_chunks = split_entities(chunk_text, chunk_entities, sub_limit)
+        if len(sub_chunks) <= 1 and text_len > 1:
+            sub_limit = max(1, text_len - 1)
+            sub_chunks = split_entities(chunk_text, chunk_entities, sub_limit)
+        if len(sub_chunks) <= 1:
+            pending = (
+                _split_lines_by_budget(
+                    chunk_text,
+                    chunk_entities,
+                    max_utf16_len=max_utf16_len,
+                    max_entities=max_entities,
+                )
+                + pending
+            )
+            continue
+        pending = list(sub_chunks) + pending
+
+    return packed
+
+
+def _is_entities_too_long(exc: Exception) -> bool:
+    return isinstance(exc, BadRequest) and "Entities_too_long" in str(exc)
+
+
 async def run_agent_streaming(
     prompt: str,
     timeout: float = AGENT_TIMEOUT,
@@ -536,27 +736,55 @@ async def _send_draft(bot, chat_id: int, payload: EntityDraftPayload):
         logger.debug("Draft send failed: %s", exc)
 
 
+async def _send_formatted_chunk(
+    bot,
+    chat_id: int,
+    chunk_text: str,
+    chunk_entities: list,
+) -> None:
+    tg_entities = _to_telegram_entities(chunk_entities)
+    try:
+        if tg_entities:
+            await bot.send_message(
+                chat_id=chat_id, text=chunk_text, entities=tg_entities
+            )
+        else:
+            await bot.send_message(chat_id=chat_id, text=chunk_text)
+    except BadRequest as exc:
+        if _is_entities_too_long(exc) and utf16_len(chunk_text) > 1:
+            smaller_limit = max(1, utf16_len(chunk_text) // 2)
+            smaller_entity_limit = max(1, MAX_ENTITIES_PER_MESSAGE // 2)
+            sub_chunks = _pack_telegram_chunks(
+                chunk_text,
+                chunk_entities,
+                max_utf16_len=smaller_limit,
+                max_entities=smaller_entity_limit,
+            )
+            if len(sub_chunks) > 1:
+                for sub_text, sub_entities in sub_chunks:
+                    await _send_formatted_chunk(bot, chat_id, sub_text, sub_entities)
+                return
+        logger.warning(
+            "Failed to send formatted chunk (%s); falling back to plain text",
+            exc,
+        )
+        await bot.send_message(chat_id=chat_id, text=chunk_text)
+    except Exception as exc:
+        logger.warning(
+            "Failed to send formatted chunk (%s); falling back to plain text",
+            exc,
+        )
+        await bot.send_message(chat_id=chat_id, text=chunk_text)
+
+
 async def _send_message_chunks(bot, chat_id: int, text: str, entities: list):
-    chunks = split_entities(text, entities, MAX_MESSAGE_UTF16)
+    chunks = _pack_telegram_chunks(text, entities)
     if not chunks:
         await bot.send_message(chat_id=chat_id, text="Hecho, sin salida del agente.")
         return
 
     for chunk_text, chunk_entities in chunks:
-        tg_entities = _to_telegram_entities(chunk_entities)
-        try:
-            if tg_entities:
-                await bot.send_message(
-                    chat_id=chat_id, text=chunk_text, entities=tg_entities
-                )
-            else:
-                await bot.send_message(chat_id=chat_id, text=chunk_text)
-        except Exception as exc:
-            logger.warning(
-                "Failed to send formatted chunk (%s); falling back to plain text",
-                exc,
-            )
-            await bot.send_message(chat_id=chat_id, text=chunk_text)
+        await _send_formatted_chunk(bot, chat_id, chunk_text, chunk_entities)
 
 
 async def _send_final(bot, chat_id: int, payload: EntityFinalPayload):

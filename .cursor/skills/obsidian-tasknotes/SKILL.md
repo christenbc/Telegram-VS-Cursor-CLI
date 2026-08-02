@@ -68,11 +68,49 @@ Example for `Comprar leche.md`:
 
 ## Morning summary
 
-Recommended structure:
+Group tasks **by TaskNotes `contexts`** (frontmatter), not in one flat list.
 
-1. **Today's tasks** — `scheduled` or `due` today (Madrid time)
-2. **Pending** — `status` `open` or `in-progress`, grouped by priority and overdue status
-3. **Subtasks** — nested under their parent task (not a separate top-level section)
+### Which tasks to include
+
+**Only list tasks that have at least one of `scheduled` or `due` set** in frontmatter (non-empty).  
+If both are missing or empty, **omit the task entirely** — do not show it in any section.
+
+Among dated tasks, include:
+
+- **Hoy** — `scheduled` or `due` falls on today (Madrid time)
+- **Pendientes** — `status` `open` or `in-progress`, with `scheduled` or `due` **before today** (overdue; Madrid time)
+
+Do not list open tasks that only have future dates (after today) unless they also qualify for **Hoy**.
+
+### Discover contexts
+
+1. Read task notes under `{OBSIDIAN_TASKS_PREFIX}/`.
+2. Apply the inclusion filter above, then collect every distinct `contexts` value on those tasks.
+3. Do not assume a fixed list — use whatever contexts exist in the vault (e.g. `habits`, `hibika`, `office`, `home`).
+
+### Section layout
+
+Create **`## General` first** for tasks with no `contexts` (or an empty list), then **one section per context value**:
+
+| Context value | Section heading (Spanish if the user writes in Spanish) |
+|---------------|-----------------------------------------------------------|
+| _(empty / missing)_ | `## General` |
+| `habits` | `## Hábitos` |
+| `hibika` | `## Hibika` |
+| any other slug | `##` + humanized name (`deep-work` → `Deep work`, `office` → `Office`) |
+
+**Section order:** `General` first, then `habits` (if present), then other contexts alphabetically by slug.
+
+**Tasks with multiple contexts** — list the task under **each** matching section.
+
+### Within each context section
+
+1. **Hoy** — dated tasks for today (see inclusion filter above)
+2. **Pendientes** — overdue dated tasks (`open` / `in-progress`), grouped by priority
+
+Skip a subsection if it would be empty for that context.
+
+Use the priority group labels below inside **Pendientes** (not as global top-level sections).
 
 Be concise but complete. Use headings and lists.
 Leave a blank line before each heading or priority-group label.

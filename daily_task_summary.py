@@ -29,7 +29,10 @@ def build_daily_prompt() -> str:
 
     return (
         f"Buenos días. Hoy es {fecha_madrid}.\n"
-        "Hazme el resumen matutino de mis tareas del vault."
+        "Hazme el resumen matutino de mis tareas del vault.\n"
+        "Agrupa las tareas en secciones separadas según su campo `contexts` "
+        "(hábitos, hibika, etc.): primero General (sin contexto), luego cada contexto.\n"
+        "No incluyas tareas sin `due` ni `scheduled`; solo las de hoy y las atrasadas."
     )
 
 
