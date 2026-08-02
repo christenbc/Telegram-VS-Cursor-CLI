@@ -50,6 +50,8 @@ SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "2700"))
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_WHISPER_MODEL = "whisper-large-v3"
 MAX_MESSAGE_UTF16 = 4096
+# asyncio readline() default is 64 KiB; agent stream-json can emit longer lines.
+SUBPROCESS_STREAM_LIMIT = 1024 * 1024
 
 BOT_REPO_ROOT = Path(__file__).resolve().parent
 SESSIONS_PATH = BOT_REPO_ROOT / "sessions.json"
@@ -445,6 +447,7 @@ async def run_agent_streaming(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=SUBPROCESS_STREAM_LIMIT,
     )
 
     yielded_any = False
