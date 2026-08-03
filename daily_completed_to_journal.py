@@ -34,6 +34,7 @@ CHECKBOX_LINE_RE = re.compile(r"^(-\s*\[x\]\s+)(.+)$", re.IGNORECASE | re.MULTIL
 # Non-habit form: a line that is only a wikilink
 BARE_WIKILINK_LINE_RE = re.compile(r"^(\[\[.+\]\])\s*$", re.MULTILINE)
 WIKILINK_RE = re.compile(r"^\[\[(.+)\]\]$")
+DAILY_JOURNAL_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 
 @dataclass(frozen=True)
@@ -153,8 +154,44 @@ def scan_completed_tasks(tasks_dir: Path, day: str) -> list[CompletedTask]:
     return found
 
 
+def iter_daily_journal_files(vault_root: Path) -> list[Path]:
+    """All YYYY-MM-DD.md files in the vault (excluding .obsidian)."""
+    hits: list[Path] = []
+    for path in vault_root.rglob("*.md"):
+        if not path.is_file():
+            continue
+        if ".obsidian" in path.parts:
+            continue
+        if not DAILY_JOURNAL_FILE_RE.match(path.name):
+            continue
+        hits.append(path)
+    return hits
+
+
+def discover_journal_directory(vault_root: Path) -> Path | None:
+    """Directory with the most daily journal companions (YYYY-MM-DD.md)."""
+    daily_files = iter_daily_journal_files(vault_root)
+    if not daily_files:
+        return None
+
+    counts: dict[Path, int] = {}
+    for path in daily_files:
+        parent = path.parent
+        counts[parent] = counts.get(parent, 0) + 1
+
+    def sort_key(directory: Path) -> tuple[int, int, str]:
+        try:
+            rel = directory.relative_to(vault_root)
+        except ValueError:
+            rel = directory
+        return (-counts[directory], len(rel.parts), str(rel).lower())
+
+    return min(counts.keys(), key=sort_key)
+
+
 def find_journal_candidates(vault_root: Path, day: str) -> list[Path]:
     target_name = f"{day}.md"
+    journal_dir = discover_journal_directory(vault_root)
     hits: list[Path] = []
     for path in vault_root.rglob(target_name):
         if not path.is_file():
@@ -163,12 +200,13 @@ def find_journal_candidates(vault_root: Path, day: str) -> list[Path]:
             continue
         hits.append(path)
 
-    def sort_key(p: Path) -> tuple[int, str]:
+    def sort_key(p: Path) -> tuple[int, int, str]:
+        in_journal_dir = journal_dir is not None and p.parent == journal_dir
         try:
             rel = p.relative_to(vault_root)
         except ValueError:
             rel = p
-        return (len(rel.parts), str(rel).lower())
+        return (0 if in_journal_dir else 1, len(rel.parts), str(rel).lower())
 
     return sorted(hits, key=sort_key)
 
@@ -178,7 +216,12 @@ def resolve_journal(vault_root: Path, day: str) -> tuple[Path, bool, int]:
     candidates = find_journal_candidates(vault_root, day)
     if candidates:
         return candidates[0], False, len(candidates)
-    created_path = vault_root / f"{day}.md"
+
+    journal_dir = discover_journal_directory(vault_root)
+    if journal_dir is not None:
+        created_path = journal_dir / f"{day}.md"
+    else:
+        created_path = vault_root / f"{day}.md"
     created_path.write_text("", encoding="utf-8")
     return created_path, True, 0
 
@@ -257,10 +300,10 @@ def build_telegram_message(vault_alias: str, result: DumpResult) -> str:
     if result.journal_path is not None:
         lines.append(f"Diario: {result.journal_path}")
         if result.journal_created:
-            lines.append("(diario creado en la raíz del vault)")
+            lines.append("(diario creado junto a los demás diarios del vault)")
         elif result.journal_candidates > 1:
             lines.append(
-                f"(había {result.journal_candidates} candidatos; se eligió el de menor profundidad)"
+                f"(había {result.journal_candidates} candidatos; se eligió el del directorio de diarios)"
             )
 
     if not result.completed_found:

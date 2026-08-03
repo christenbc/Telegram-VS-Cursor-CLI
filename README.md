@@ -165,7 +165,7 @@ A task counts as completed yesterday if:
 - `status: done` and `completedDate: YYYY-MM-DD` matches yesterday, or
 - yesterday appears under `complete_instances` (recurring habits)
 
-The journal file is discovered by filename only (`YYYY-MM-DD.md` anywhere under the vault, excluding `.obsidian`), so vaults need not share the same folder layout. If several matches exist, the shallowest path wins. If none exist and there is something to dump, the note is created at the vault root. Re-runs are idempotent (existing lines in the correct form are left alone; legacy/plain or wrong-format lines for the same task are upgraded in place).
+The journal file is discovered by filename only (`YYYY-MM-DD.md` anywhere under the vault, excluding `.obsidian`), so vaults need not share the same folder layout. The script also scans all `YYYY-MM-DD.md` files to find the directory where most daily journals live (per vault). That directory is preferred when several matches exist for the same day, and when a new note must be created. If no daily journals exist yet, the note is created at the vault root. Re-runs are idempotent (existing lines in the correct form are left alone; legacy/plain or wrong-format lines for the same task are upgraded in place).
 
 The job always notifies Telegram with what was dumped (or that nothing was new). If no vault is selected, it sends the vault picker instead.
 
